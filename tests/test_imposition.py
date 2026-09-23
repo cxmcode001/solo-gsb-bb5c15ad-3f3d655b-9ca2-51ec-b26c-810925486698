@@ -1,5 +1,13 @@
 """拼版算法单元测试。"""
-from app.imposition import split_signatures, impose_signature, impose
+import pytest
+
+from app.imposition import (
+    split_signatures,
+    split_signatures_by_chapters,
+    impose_signature,
+    impose,
+    impose_chapters,
+)
 
 
 def test_split_exact_multiple_no_padding():
@@ -107,3 +115,83 @@ def test_impose_multi_signature_indexes_and_page_continuity():
                     if value is not None:
                         seen.append(value)
     assert sorted(seen) == list(range(1, 21))
+
+
+def test_chapters_single_chapter_matches_basic_split():
+    # 单章 = 整本书，结果与无章节分帖一致
+    assert split_signatures_by_chapters(10, 4, [1]) == split_signatures(10, 4)
+
+
+def test_chapters_adjacent_merged_into_one_signature():
+    # 相邻章节可合帖：两章共 8 页、容量 8 -> 合为一帖，0 空白
+    sigs = split_signatures_by_chapters(8, 2, [1, 5])
+    assert sigs == [[1, 2, 3, 4, 5, 6, 7, 8]]
+
+
+def test_chapters_never_cross_signature():
+    # 每章 4 页、容量 4 -> 每章独占一帖
+    sigs = split_signatures_by_chapters(8, 1, [1, 5])
+    assert sigs == [[1, 2, 3, 4], [5, 6, 7, 8]]
+
+
+def test_chapters_minimize_blank_pages():
+    # 容量 8、章长 5/3/2：[1-5]+[6-10] 需 6 空白；[1-8]+[9-10] 仅需 2 空白
+    sigs = split_signatures_by_chapters(10, 2, [1, 6, 9])
+    assert sigs == [
+        [1, 2, 3, 4, 5, 6, 7, 8],
+        [9, 10, None, None],
+    ]
+
+
+def test_chapters_minimize_signature_count_after_blanks():
+    # 空白相同（0）时取帖数更少：合帖 1 帖优于分 2 帖
+    sigs = split_signatures_by_chapters(8, 2, [1, 5])
+    assert len(sigs) == 1
+
+
+def test_chapters_prefer_earliest_split_on_tie():
+    # 空白、帖数均相同：优先最早分帖边界
+    # -> [1-4]|[5-12]|[13-20] 而非 [1-8]|[9-12]|[13-20]
+    sigs = split_signatures_by_chapters(20, 2, [1, 5, 9, 13])
+    assert sigs == [
+        [1, 2, 3, 4],
+        [5, 6, 7, 8, 9, 10, 11, 12],
+        [13, 14, 15, 16, 17, 18, 19, 20],
+    ]
+
+
+def test_chapters_too_long_single_chapter_raises():
+    # 单章 10 页 > 容量 8，无法分帖
+    with pytest.raises(ValueError):
+        split_signatures_by_chapters(10, 2, [1])
+
+
+def test_impose_chapters_reports_page_range_and_blanks():
+    result = impose_chapters(10, 2, "left", [1, 6, 9])
+    assert [s["signature_index"] for s in result] == [1, 2]
+    assert result[0]["page_start"] == 1
+    assert result[0]["page_end"] == 8
+    assert result[0]["blank_count"] == 0
+    assert result[1]["page_start"] == 9
+    assert result[1]["page_end"] == 10
+    assert result[1]["blank_count"] == 2
+    # 每帖仍按现有正反面规则拼版
+    assert result[0]["sheets"][0]["front"] == {"left": 8, "right": 1}
+    assert result[1]["sheets"][0]["front"] == {"left": None, "right": 9}
+    assert result[1]["sheets"][0]["back"] == {"left": 10, "right": None}
+
+
+def test_impose_chapters_page_coverage_and_right_binding():
+    result = impose_chapters(20, 2, "right", [1, 5, 9, 13])
+    # 所有非空页码 1..20 且不重不漏
+    seen = []
+    for sig in result:
+        for sheet in sig["sheets"]:
+            for side in ("front", "back"):
+                for pos in ("left", "right"):
+                    value = sheet[side][pos]
+                    if value is not None:
+                        seen.append(value)
+    assert sorted(seen) == list(range(1, 21))
+    # 右装订镜像：首帖最外张正面 = 首页/末页
+    assert result[0]["sheets"][0]["front"] == {"left": 1, "right": 4}

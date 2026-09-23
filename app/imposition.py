@@ -7,10 +7,17 @@
 3. 每帖内部按纸张“从外到内”给出正反面左右页码；
 4. 左装订（left）：最外张正面 = 末页/首页，背面 = 次页/倒数第二页，
    逐张向内递推；右装订（right）将左右页位镜像交换。
+
+章节分帖（``split_signatures_by_chapters`` / ``impose_chapters``）
+----
+- 章节不可跨帖，相邻章节可合帖；每帖实际页数不超过 ``max_sheets * 4``；
+- 分帖边界依次最小化：各帖补至 4 的倍数所需空白总数 → 帖数；
+  仍相同则优先最早的分帖边界；
+- 每帖各自在尾部补空白至 4 的倍数，再按规则 3/4 拼版。
 """
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple
 
 Binding = Literal["left", "right"]
 
@@ -88,6 +95,102 @@ def impose(total_pages: int, max_sheets: int, binding: Binding) -> List[dict]:
                 "signature_index": index,
                 "sheet_count": len(pages) // 4,
                 "page_count_padded": len(pages),
+                "sheets": impose_signature(pages, binding),
+            }
+        )
+    return result
+
+
+def split_signatures_by_chapters(
+    total_pages: int,
+    max_sheets: int,
+    chapter_starts: List[int],
+) -> List[List[Optional[int]]]:
+    """按章节边界分帖：章节不可跨帖，相邻章节可合帖。
+
+    在满足“单帖实际页数 ≤ ``max_sheets * 4``”的分帖方案中，依次最小化：
+
+    1. 各帖补至 4 的倍数所需空白页总数；
+    2. 帖数；
+    3. 仍相同则取最早的分帖边界（排在前面的帖尽量短）。
+
+    每帖尾部补空白至 4 的倍数（``None``）。
+    任一单章页数超过容量时抛 ``ValueError``。
+    """
+    capacity = max_sheets * 4
+    starts = list(chapter_starts)
+    ends = starts[1:] + [total_pages + 1]
+    lengths = [end - start for start, end in zip(starts, ends)]
+    for start, length in zip(starts, lengths):
+        if length > capacity:
+            raise ValueError(
+                f"起始页为 {start} 的章节共 {length} 页，超过单帖容量 {capacity} 页"
+            )
+
+    m = len(lengths)
+    # 章节页数前缀和，O(1) 求连续若干章的总页数
+    prefix = [0] * (m + 1)
+    for i, length in enumerate(lengths, 1):
+        prefix[i] = prefix[i - 1] + length
+
+    def blanks(count: int) -> int:
+        # 补至 4 的倍数所需空白页数
+        return (-count) % 4
+
+    # 后缀 DP：best[i] = 章节 i..m（1-based）的最优 (空白总数, 帖数)。
+    # 内层循环最多推进 capacity 章（每章至少 1 页），整体 O(m * capacity)。
+    best: List[Tuple[int, int]] = [(0, 0)] * (m + 2)
+    for i in range(m, 0, -1):
+        best_cost: Optional[Tuple[int, int]] = None
+        for j in range(i, m + 1):
+            count = prefix[j] - prefix[i - 1]
+            if count > capacity:
+                break
+            candidate = (blanks(count) + best[j + 1][0], 1 + best[j + 1][1])
+            if best_cost is None or candidate < best_cost:
+                best_cost = candidate
+        # 单章必能成帖（前面已校验容量），best_cost 不会为 None
+        assert best_cost is not None
+        best[i] = best_cost
+
+    # 重建：达到最优成本的边界中取最早者（每步选最小的 j）
+    signatures: List[List[Optional[int]]] = []
+    i = 1
+    while i <= m:
+        for j in range(i, m + 1):
+            count = prefix[j] - prefix[i - 1]
+            if count > capacity:
+                break
+            if (blanks(count) + best[j + 1][0], 1 + best[j + 1][1]) == best[i]:
+                pages: List[Optional[int]] = list(
+                    range(starts[i - 1], starts[i - 1] + count)
+                )
+                pages.extend([None] * blanks(count))
+                signatures.append(pages)
+                i = j + 1
+                break
+    return signatures
+
+
+def impose_chapters(
+    total_pages: int,
+    max_sheets: int,
+    binding: Binding,
+    chapter_starts: List[int],
+) -> List[dict]:
+    """按章节分帖的完整拼版：每帖额外给出原页起止页码与空白数。"""
+    grouped = split_signatures_by_chapters(total_pages, max_sheets, chapter_starts)
+    result: List[dict] = []
+    for index, pages in enumerate(grouped, start=1):
+        real_pages = [p for p in pages if p is not None]
+        result.append(
+            {
+                "signature_index": index,
+                "sheet_count": len(pages) // 4,
+                "page_count_padded": len(pages),
+                "page_start": real_pages[0],
+                "page_end": real_pages[-1],
+                "blank_count": len(pages) - len(real_pages),
                 "sheets": impose_signature(pages, binding),
             }
         )

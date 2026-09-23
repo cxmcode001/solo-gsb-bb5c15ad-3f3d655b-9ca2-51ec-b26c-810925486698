@@ -3,6 +3,9 @@
 按**帖（signature）**对小册子进行拼版：输入总页数、每帖最多纸张数和装订方向（左/右），
 按纸张**从外到内**返回每帖各张纸正反面的左右页码。空白页用 `null` 表示。
 
+另提供**章节分帖**接口 `/api/v1/impose/chapters`：按章节首页页码分帖，章节不可跨帖、
+相邻章节可合帖，并自动选择空白最少、帖数最少的分帖边界。
+
 ## 一条命令启动
 
 需要安装 Docker（含 Compose 插件），在项目根目录执行：
@@ -40,6 +43,7 @@ HOST_PORT=9000 docker compose up -d --build
 - 健康检查：`GET http://localhost:8000/health`
 - 交互式文档（Swagger UI）：`http://localhost:8000/docs`
 - 拼版接口：`POST http://localhost:8000/api/v1/impose`
+- 章节分帖拼版接口：`POST http://localhost:8000/api/v1/impose/chapters`
 
 ## 接口说明
 
@@ -116,6 +120,77 @@ curl -X POST http://localhost:8000/api/v1/impose \
   ]
 }
 ```
+
+## 章节分帖拼版（POST /api/v1/impose/chapters）
+
+在 `/api/v1/impose` 的基础上支持**章节感知**分帖：章节不可跨帖，相邻章节可合帖。
+本地访问地址 `http://localhost:8000/api/v1/impose/chapters`（改了 `HOST_PORT` 则对应替换端口）。
+
+### 请求
+
+`POST /api/v1/impose/chapters`，`Content-Type: application/json`
+
+| 字段 | 类型 | 约束 | 说明 |
+| --- | --- | --- | --- |
+| `total_pages` | 整数 | ≥ 1 | 总页数（正整数） |
+| `max_sheets_per_signature` | 整数 | ≥ 1 | 每帖最多纸张数；每帖实际页数不超过其 **4 倍** |
+| `binding` | 字符串 | `left` / `right` | 装订方向：左装订 / 右装订 |
+| `chapter_starts` | 整数数组 | 严格递增、首项为 1、末项 ≤ `total_pages` | 各章节首页页码 |
+
+```bash
+curl -X POST http://localhost:8000/api/v1/impose/chapters \
+  -H "Content-Type: application/json" \
+  -d '{"total_pages": 20, "max_sheets_per_signature": 2, "binding": "left", "chapter_starts": [1, 5, 9, 13]}'
+```
+
+### 响应
+
+沿用 `sheets` 页位结构（与 `/api/v1/impose` 相同），并为每帖补充原页起止页码
+`page_start` / `page_end` 与尾部空白数 `blank_count`：
+
+```json
+{
+  "total_pages": 20,
+  "max_sheets_per_signature": 2,
+  "binding": "left",
+  "chapter_starts": [1, 5, 9, 13],
+  "signature_count": 3,
+  "signatures": [
+    {
+      "signature_index": 1,
+      "sheet_count": 1,
+      "page_count_padded": 4,
+      "page_start": 1,
+      "page_end": 4,
+      "blank_count": 0,
+      "sheets": [
+        {
+          "sheet_index": 1,
+          "front": { "left": 4, "right": 1 },
+          "back":  { "left": 2, "right": 3 }
+        }
+      ]
+    }
+  ]
+}
+```
+
+> 上例仅展示第 1 帖；实际响应含全部 3 帖（原页范围 1–4、5–12、13–20）。
+
+### 分帖规则
+
+1. 章节不可跨帖，相邻章节可合帖；每帖实际页数不超过 `4 × max_sheets_per_signature`，
+   单章超过该上限时返回 `422 Unprocessable Entity`。
+2. 在满足容量约束的分帖方案中，依次最小化：各帖补至 4 的倍数所需**空白页总数** →
+   **帖数**；仍相同则优先**最早的分帖边界**。
+3. 每帖各自在**尾部**补空白至 4 的倍数（`null`），再按与 `/api/v1/impose`
+   相同的正反面拼版规则排列。
+
+### 非法参数（4xx）
+
+除与 `/api/v1/impose` 相同的校验外，`chapter_starts` 为空、首项不为 1、未严格递增、
+超过 `total_pages`，或某一单章页数超过 `4 × max_sheets_per_signature` 时，
+均返回 `422 Unprocessable Entity`。
 
 ## 本地开发（不使用 Docker）
 

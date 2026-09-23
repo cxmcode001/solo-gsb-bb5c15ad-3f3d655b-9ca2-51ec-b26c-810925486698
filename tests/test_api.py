@@ -124,3 +124,140 @@ def test_unknown_field_rejected():
 def test_empty_body_returns_422():
     response = client.post("/api/v1/impose", json={})
     assert response.status_code == 422
+
+
+def test_impose_chapters_basic():
+    response = client.post(
+        "/api/v1/impose/chapters",
+        json={
+            "total_pages": 20,
+            "max_sheets_per_signature": 2,
+            "binding": "left",
+            "chapter_starts": [1, 5, 9, 13],
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["signature_count"] == 3
+    ranges = [
+        (s["page_start"], s["page_end"], s["blank_count"])
+        for s in data["signatures"]
+    ]
+    assert ranges == [(1, 4, 0), (5, 12, 0), (13, 20, 0)]
+    # 沿用 sheets 页位结构：首帖最外张正面 = 末页/首页
+    first = data["signatures"][0]["sheets"][0]
+    assert first["front"] == {"left": 4, "right": 1}
+    assert first["back"] == {"left": 2, "right": 3}
+
+
+def test_impose_chapters_right_binding_and_blanks():
+    response = client.post(
+        "/api/v1/impose/chapters",
+        json={
+            "total_pages": 10,
+            "max_sheets_per_signature": 2,
+            "binding": "right",
+            "chapter_starts": [1, 6, 9],
+        },
+    )
+    assert response.status_code == 200
+    sigs = response.json()["signatures"]
+    assert [(s["page_start"], s["page_end"]) for s in sigs] == [(1, 8), (9, 10)]
+    # 右装订镜像：最外张正面 = 首页/末页
+    assert sigs[0]["sheets"][0]["front"] == {"left": 1, "right": 8}
+    # 末帖 2 页补 2 空白
+    assert sigs[1]["blank_count"] == 2
+    assert sigs[1]["sheets"][0]["front"] == {"left": 9, "right": None}
+
+
+def test_chapters_first_start_not_one():
+    response = client.post(
+        "/api/v1/impose/chapters",
+        json={
+            "total_pages": 10,
+            "max_sheets_per_signature": 2,
+            "binding": "left",
+            "chapter_starts": [2, 5],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_chapters_not_strictly_increasing():
+    for starts in ([1, 3, 3], [1, 5, 4]):
+        response = client.post(
+            "/api/v1/impose/chapters",
+            json={
+                "total_pages": 10,
+                "max_sheets_per_signature": 2,
+                "binding": "left",
+                "chapter_starts": starts,
+            },
+        )
+        assert response.status_code == 422
+
+
+def test_chapters_empty_list():
+    response = client.post(
+        "/api/v1/impose/chapters",
+        json={
+            "total_pages": 10,
+            "max_sheets_per_signature": 2,
+            "binding": "left",
+            "chapter_starts": [],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_chapters_start_beyond_total_pages():
+    response = client.post(
+        "/api/v1/impose/chapters",
+        json={
+            "total_pages": 10,
+            "max_sheets_per_signature": 2,
+            "binding": "left",
+            "chapter_starts": [1, 11],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_chapters_single_chapter_too_long():
+    # 单章 10 页 > 容量 8（2 张 × 4）-> 422
+    response = client.post(
+        "/api/v1/impose/chapters",
+        json={
+            "total_pages": 10,
+            "max_sheets_per_signature": 2,
+            "binding": "left",
+            "chapter_starts": [1],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_chapters_missing_field():
+    response = client.post(
+        "/api/v1/impose/chapters",
+        json={
+            "total_pages": 10,
+            "max_sheets_per_signature": 2,
+            "binding": "left",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_chapters_unknown_field_rejected():
+    response = client.post(
+        "/api/v1/impose/chapters",
+        json={
+            "total_pages": 10,
+            "max_sheets_per_signature": 2,
+            "binding": "left",
+            "chapter_starts": [1],
+            "extra": 1,
+        },
+    )
+    assert response.status_code == 422
